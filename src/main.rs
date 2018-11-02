@@ -3,11 +3,31 @@ use byteorder::{ReadBytesExt, LittleEndian};
 
 extern crate clap;
 extern crate hound;
+extern crate image;
+use image::{Pixel, Rgb};
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+
+type Index = HashMap<String, IndexEntry>;
+
+#[derive(Debug,PartialEq,Clone)]
+pub struct IndexEntry {
+  pub name: String,
+  pub offset: u32,
+  pub size: u32,
+}
+
+type Palette = [Rgb<u8>; 256];
+
+#[derive(Clone)]
+pub struct Background {
+	pub width: u16,
+	pub height: u16,
+	pub palette: Palette,
+}
 
 pub struct BitReader<R: Read> {
 	inner: R,
@@ -45,15 +65,6 @@ impl<R: Read> BitReader<R> {
 		}
 		Ok(val)
 	}
-}
-
-type Index = HashMap<String, IndexEntry>;
-
-#[derive(Debug,PartialEq,Clone)]
-pub struct IndexEntry {
-  pub name: String,
-  pub offset: u32,
-  pub size: u32,
 }
 
 fn main() {
@@ -209,6 +220,27 @@ fn read_resource<R: Read + Seek>(mut reader: R, entry: &IndexEntry) -> Result<Ve
 
     
     Ok(data)
+}
+
+fn read_palette<R: Read>(mut reader: R) -> Result<Palette, Box<Error>> {
+	let mut palette = [Rgb::from_channels(0, 0, 0, 0); 256];
+	for i in 0..256 {
+		palette[i] = Rgb::from_channels(reader.read_u8()?, reader.read_u8()?, reader.read_u8()?, 0);
+	}
+	Ok(palette)
+}
+
+fn read_background<R: Read>(mut reader: R) -> Result<Background, Box<Error>> {
+	let width = reader.read_u16::<LittleEndian>()?;
+	let height = reader.read_u16::<LittleEndian>()?;
+	let image_len = reader.read_u16::<LittleEndian>()? * 64;
+	std::io::copy(&mut reader.by_ref().take(16), &mut std::io::sink());
+
+	let mut data = Vec::with_capacity(image_len as usize);
+	reader.take(image_len as u64).read_to_end(&mut data)?;
+
+	
+	Err("a".into())
 }
 
 fn decompress<R: Read>(reader: R, uncompressed_len: u32) -> Result<Vec<u8>, Box<Error>> {
