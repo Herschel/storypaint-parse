@@ -27,6 +27,14 @@ pub struct Background {
 	pub width: u16,
 	pub height: u16,
 	pub palette: Palette,
+    pub image: Vec<u8>,
+}
+
+#[derive(Clone)]
+pub struct Sprite {
+	pub width: u16,
+	pub height: u16,
+    pub image: Vec<u8>,
 }
 
 pub struct BitReader<R: Read> {
@@ -128,6 +136,10 @@ fn extract_rsc_file(input_filename: &str, output_path: &str, resource: Option<&s
         let path = std::path::Path::new(resource_name);
         match path.extension().and_then(OsStr::to_str) {
             Some("VOC") => write_voc(&resource_data[..], output_path)?,
+            Some("BKG") => {
+                let background = read_background(&resource_data[..])?;
+                write_background(background, output_path)?;
+            },
             _ => {
                 std::fs::create_dir_all(output_path)?;
                 let out_file = format!("{}/{}", output_path, entry.name);
@@ -225,22 +237,71 @@ fn read_resource<R: Read + Seek>(mut reader: R, entry: &IndexEntry) -> Result<Ve
 fn read_palette<R: Read>(mut reader: R) -> Result<Palette, Box<Error>> {
 	let mut palette = [Rgb::from_channels(0, 0, 0, 0); 256];
 	for i in 0..256 {
-		palette[i] = Rgb::from_channels(reader.read_u8()?, reader.read_u8()?, reader.read_u8()?, 0);
+        let r = (reader.read_u8()? as f64 * (255.0/63.0)) as u8;
+        let g = (reader.read_u8()? as f64 * (255.0/63.0)) as u8;
+        let b = (reader.read_u8()? as f64 * (255.0/63.0)) as u8;
+		palette[i] = Rgb::from_channels(r, g, b, 0);
 	}
 	Ok(palette)
+}
+
+fn read_sprite<R: Read>(mut reader: R) -> Result<Sprite, Box<Error>> {
+	std::io::copy(&mut reader.by_ref().take(16), &mut std::io::sink())?;
+
+    let width = reader.read_u16::<LittleEndian>()?;
+    let height = reader.read_u16::<LittleEndian>()?;
+
+
+    Err("unimplemented".into())
 }
 
 fn read_background<R: Read>(mut reader: R) -> Result<Background, Box<Error>> {
 	let width = reader.read_u16::<LittleEndian>()?;
 	let height = reader.read_u16::<LittleEndian>()?;
-	let image_len = reader.read_u16::<LittleEndian>()? * 64;
-	std::io::copy(&mut reader.by_ref().take(16), &mut std::io::sink());
+	let image_len = reader.read_u16::<LittleEndian>()? as usize * 64;
+	std::io::copy(&mut reader.by_ref().take(16), &mut std::io::sink())?;
 
-	let mut data = Vec::with_capacity(image_len as usize);
-	reader.take(image_len as u64).read_to_end(&mut data)?;
+	let mut blocks = Vec::with_capacity(image_len);
+	reader.by_ref().take(image_len as u64).read_to_end(&mut blocks)?;
 
-	
-	Err("a".into())
+    let len2 = width as usize * height as usize / 32;
+	let mut block_indices: Vec<u8> = Vec::with_capacity(len2 as usize);
+	reader.by_ref().take(len2 as u64).read_to_end(&mut block_indices)?;
+
+    reader.read_u8()?; // Field_A
+    reader.read_u8()?; // Field_A
+
+    let palette = read_palette(reader)?;
+
+    let mut block_reader = &block_indices[..];
+
+    let mut final_data: Vec<u8> = Vec::with_capacity(width as usize * height as usize);
+    final_data.resize(width as usize * height as usize, 0);
+    let mut y = 0;
+    let mut x = 0;
+    let mut block_num = 0;
+    while block_num < width as usize * height as usize / 64 {
+        let block_index = block_reader.read_u16::<LittleEndian>()? as usize * 64; 
+            for iy in 0..8 {
+                for ix in 0..8 {
+                    let pos = (x + ix) + (y + iy) * (width as usize);
+                    final_data[pos] = blocks[block_index + ix * 8 + iy];
+                }
+            }
+        x += 8;
+        if x >= width as usize {
+            x = 0;
+            y += 8;
+        }
+        block_num += 1;
+    }
+
+	Ok(Background {
+        width: width,
+        height: height,
+        palette,
+        image: final_data
+    })
 }
 
 fn decompress<R: Read>(reader: R, uncompressed_len: u32) -> Result<Vec<u8>, Box<Error>> {
@@ -272,6 +333,28 @@ fn decompress<R: Read>(reader: R, uncompressed_len: u32) -> Result<Vec<u8>, Box<
     }
 
 	Ok(out)
+}
+
+fn write_background(background: Background, out_file: &str) -> Result<(), Box<Error>> {
+    use image::*;
+
+    let mut image = ImageBuffer::new(background.width as u32, background.height as u32);
+
+    let (width, height) = image.dimensions();
+    let mut i = 0;
+    for y in 0..height {
+        for x in 0..width {
+            let color = background.image[i];
+            i += 1;
+            image.put_pixel(x, y, background.palette[color as usize]);
+        }
+    }
+
+    
+
+    image.save(out_file)?;
+
+    Ok(())
 }
 
 fn write_voc<R: Read>(reader: R, out_file: &str) -> Result<(), Box<Error>> {
